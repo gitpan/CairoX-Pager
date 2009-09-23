@@ -12,6 +12,7 @@ __PACKAGE__->mk_accessors( qw(
 ) );
 
 use Cairo;
+use File::Spec;
 
 =head1 NAME
 
@@ -19,11 +20,11 @@ CairoX::Pager - pager for pdf , image surface backend.
 
 =head1 VERSION
 
-Version 0.01
+Version 0.02
 
 =cut
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 =head1 DESCRIPTION
 
@@ -59,6 +60,15 @@ export pages pdf:
 
     $pager->finish();
 
+export pages as svg :
+
+    my $pager = CairoX::Pager->new( 
+        svg => { 
+            directory => $path,
+            filename_format => "%04d.png",
+        },
+        page_spec => { width =>  , height => },
+    );
 
 export pages as png :
 
@@ -71,25 +81,7 @@ export pages as png :
         page_spec => { width =>  , height => },
     );
 
-    for ( ... ) {
-
-        $pager->page_start( );
-
-        my $surface = $pager->surface();   # get cairo surface 
-        my $cr = $pager->context();    # get cairo context
-
-
-
-        # do something whatever you want
-
-        $pager->page_end( );
-    }
-
-    $pager->finish();
-
 =head1 FUNCTIONS
-
-=cut 
 
 =head2 new 
 
@@ -101,40 +93,46 @@ sub new {
     my $self = bless {}, $class;
     $self->SUPER::new;
 
-    die unless $args{png} or $args{pdf} ;
+    die unless $args{png} or $args{pdf} or $args{svg} or $args{ps} ;
 
     die unless $args{page_spec};
 
     $self->id( 0 );
-    $self->config( $args{png} || $args{pdf} );
+    $self->config( $args{png} || $args{pdf} || $args{svg} || $args{ps} );
     $self->page_spec(  $args{page_spec} );
     $self->type( 
         defined $args{png} ? 'png' : 
-                defined $args{pdf} ? 'pdf' : undef 
+            defined $args{pdf} ? 'pdf' :
+                defined $args{svg} ? 'svg' : undef 
     );
 
-    if( $self->type eq 'pdf' ) {
-
-        my $surface = Cairo::PdfSurface->create(
+    if( $self->type eq 'pdf' || $self->type eq 'ps' ) {
+        my $class = 'Cairo::' . ucfirst( $self->type ) . 'Surface';
+        my $surface = $class->create(
             $self->config->{filename},
             $self->page_spec->{width},
             $self->page_spec->{height},
         );
 
         my $context = Cairo::Context->create($surface);
-        $context->rectangle( 
-            0, 0,
-            $self->page_spec->{width},
-            $self->page_spec->{height}
-        );
-        $context->set_source_rgba( 1, 1, 1, 1 );
-        $context->fill;
-
         $self->surface( $surface );
         $self->context( $context );
+        $self->fill_white();
     }
-
     return $self;
+}
+
+
+sub fill_white {
+    my $self = shift;
+    my $context = $self->context;
+    $context->rectangle( 
+        0, 0,
+        $self->page_spec->{width},
+        $self->page_spec->{height}
+    );
+    $context->set_source_rgba( 1, 1, 1, 1 );
+    $context->fill;
 }
 
 =head2 current_filename
@@ -167,18 +165,26 @@ sub new_page {
             $self->page_spec->{width},
             $self->page_spec->{height},
         );
+        $self->surface( $surface );
 
         my $context = Cairo::Context->create($surface);
-        $context->rectangle (
-            0, 0,
+        $self->context( $context );
+
+        $self->fill_white();
+    }
+    elsif( $self->type eq 'svg' ) {
+        my $surface = Cairo::SvgSurface->create( 
+            $self->current_filename ,
             $self->page_spec->{width},
             $self->page_spec->{height},
         );
-        $context->set_source_rgba( 1, 1, 1, 1 );
-        $context->fill;
-
         $self->surface( $surface );
+
+        my $context = Cairo::Context->create($surface);
         $self->context( $context );
+
+        $self->fill_white();
+
     }
 }
 
@@ -189,9 +195,6 @@ sub new_page {
 
 sub finish_page {
     my $self = shift;
-
-    $self->context->show_page();
-    $self->surface->flush();
     if( $self->type eq 'png' ) {
         my $filename = $self->current_filename;
         $self->surface->write_to_png( $filename );
@@ -201,10 +204,15 @@ sub finish_page {
         $self->context( undef );
 
         # XXX: resolution option
-        AIINK::Imager->set_file_res( $filename , $self->config->{dpi} );
+        # AIINK::Imager->set_file_res( $filename , $self->config->{dpi} );
+    }
+    elsif( $self->type eq 'svg' ) {
+        $self->surface( undef );
+        $self->context( undef );
     }
     elsif( $self->type eq 'pdf' ) {
-
+        $self->context->show_page();
+        $self->surface->flush();
     }
 }
 
